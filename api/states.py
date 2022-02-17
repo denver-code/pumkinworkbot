@@ -6,4 +6,4 @@ class AuthStates(StatesGroup):
     role = State()
 
 class RegisterStates(StatesGroup):
-    pass
+    role = State()
