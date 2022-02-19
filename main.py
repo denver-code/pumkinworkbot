@@ -1,6 +1,6 @@
 import os
 import logging
-
+from functools import wraps
 
 if not os.path.isdir("logs"):
     os.mkdir("logs")
@@ -26,13 +26,23 @@ from aiogram.dispatcher import FSMContext
 from aiogram.contrib.fsm_storage.memory import MemoryStorage
 
 
-from api.states import AuthStates, RegisterStates
+from api.states import *
 from api.backend_api import CallApi
-
+from api.database_api import User
 
 storage = MemoryStorage()
 bot = Bot(token=os.getenv("token"))
 dp = Dispatcher(bot, storage=storage)
+
+
+def need_auth(func):
+    @wraps(func)
+    async def wrapper(*args, **kwargs):
+        response = await CallApi().check_auth(args[0].chat.id)
+        if await CallApi().check_auth(args[0].chat.id):
+            return await func(*args, **kwargs)
+        return await args[0].answer("You not authed, please use /start command for authorize.")
+    return wrapper
 
 
 async def set_bot_commands(bot: Bot):
@@ -45,6 +55,34 @@ async def on_startup(_):
     await set_bot_commands(bot)
 
 
+@dp.message_handler(commands=["menu"])
+@need_auth
+async def menu_event(message: types.Message):
+    user = await User.get({"user_id":message.chat.id})
+    role = user["role"]
+    buttons_getter = [
+        types.InlineKeyboardButton(text="My Profile", callback_data=f"myprofile"),
+        types.InlineKeyboardButton(text="Service responses", callback_data=f"service_responses"),
+        types.InlineKeyboardButton(text="Publish service", callback_data=f"add_notification"),
+        types.InlineKeyboardButton(text="My Profile on Site", url=f"https://pumpkin.work/EditProfile"),
+        types.InlineKeyboardButton(text="Exit", callback_data=f"myprofile"),
+    ]
+    buttons_provider = [
+        types.InlineKeyboardButton(text="My Profile", callback_data=f"myprofile"),
+        types.InlineKeyboardButton(text="Orders taken", callback_data=f"myprofile"),
+        types.InlineKeyboardButton(text="Orders channel", callback_data=f"myprofile"),
+        types.InlineKeyboardButton(text="My Profile on Site", url=f"https://pumpkin.work/ViewProvideProfile/-1"),
+        types.InlineKeyboardButton(text="Exit", callback_data=f"myprofile"),
+    ]
+    keyboard = types.InlineKeyboardMarkup(row_width=1)
+    if role == "provider":
+        buttons = buttons_provider
+    else:
+        buttons = buttons_getter
+    keyboard.add(*buttons)
+    await message.answer("You want:", reply_markup=keyboard)
+
+
 @dp.callback_query_handler(state=["*"])
 async def callback_event(query: types.CallbackQuery, state: FSMContext):
 
@@ -52,6 +90,44 @@ async def callback_event(query: types.CallbackQuery, state: FSMContext):
         await query.message.delete()
         await query.message.answer("Your email:")
         await AuthStates.email.set()
+
+    if query.data == "add_notification":
+        await query.message.delete()
+        await CreateNotification.name.set()
+        await query.message.answer("Request Title:")
+
+    elif query.data == "service_responses":
+        await query.message.delete()
+        message_text = ""
+        response = await CallApi().get_chats(query.from_user.id)
+        response = response.json()
+        for i in response["message"]["chats"]:
+            message_text += f"""<a href="https://pumpkin.work/chat/{i["id"]}">Notification: {i["notification"]["name"]}\nRequest: {i["request"]["name"]} {i["request"]["surname"]}\nProvide: {i["provide"]["name"]}\n(provide) (request):\nAgreement: {i["agreementProvide"]} {i["agreementRequest"]}\nComplete: {i["completeProvide"]} {i["completeRequest"]}</a>\n\n"""
+        buttons = [
+            types.InlineKeyboardButton(text="Back", callback_data=f"menu")
+        ]
+        keyboard = types.InlineKeyboardMarkup(row_width=1)
+        keyboard.add(*buttons)
+        await query.message.answer(message_text, parse_mode="Html", reply_markup=keyboard)
+
+    elif query.data == "menu":
+        await query.message.delete()
+        await menu_event(query.message)
+
+    elif query.data == "myprofile":
+        await query.message.delete()
+        user = await User.get({"user_id": query.from_user.id})
+        message_text = "Your Profile:"
+        for i in user["profile"]:
+            message_text += f"{i.capitalize()}: {user['profile'][i]}\n"
+
+        buttons = [
+            types.InlineKeyboardButton(text="Back", callback_data=f"menu")
+        ]
+        keyboard = types.InlineKeyboardMarkup(row_width=1)
+        keyboard.add(*buttons)
+
+        await query.message.answer(message_text, reply_markup=keyboard)
 
     elif "register" in query.data:
         role = query.data.split("=")[-1]
@@ -74,6 +150,83 @@ async def callback_event(query: types.CallbackQuery, state: FSMContext):
         keyboard.add(*buttons)
         await query.message.answer("You want:", reply_markup=keyboard)
 
+    elif "service" in query.data:
+        await query.message.delete()
+        async with state.proxy() as data:
+            service_id = query.data.split("=")[1]
+            data["service"] = service_id
+            buttons = []
+            response = await CallApi().get_country()
+            response = response.json()
+            for i in response["message"]["countrys"]:
+                buttons.append(types.InlineKeyboardButton(f"{i['name']}", callback_data=f"country={i['id']}"))
+            keyboard = types.InlineKeyboardMarkup(row_width=1)
+            keyboard.add(*buttons)
+            await query.message.answer("Select Country:", reply_markup=keyboard)
+            await CreateNotification().next()
+
+
+    elif "country" in query.data:
+        await query.message.delete()
+        async with state.proxy() as data:
+            country_id = query.data.split("=")[1]
+            data["country"] = country_id
+            buttons = []
+            response = await CallApi().get_regions(country_id)
+            response = response.json()
+            for i in response["message"]["regions"]:
+                buttons.append(types.InlineKeyboardButton(f"{i['name']}", callback_data=f"region={i['id']}"))
+            keyboard = types.InlineKeyboardMarkup(row_width=1)
+            keyboard.add(*buttons)
+            await query.message.answer("Select Region:", reply_markup=keyboard)
+            await CreateNotification().next()
+        
+    elif "region" in query.data:
+        await query.message.delete()
+        async with state.proxy() as data:
+            region_id = query.data.split("=")[1]
+            data["region"] = region_id
+            buttons = []
+            response = await CallApi().get_citys(data["country"], region_id)
+            response = response.json()
+            if len(response["message"]["сitys"]) != 0:
+                for i in response["message"]["сitys"]:
+                    buttons.append(types.InlineKeyboardButton(f"{i['name']}", callback_data=f"city={i['id']}"))
+                keyboard = types.InlineKeyboardMarkup(row_width=1)
+                keyboard.add(*buttons)
+                await query.message.answer("Select City:", reply_markup=keyboard)
+                await CreateNotification().next()
+
+            else:
+                await CallApi().new_notif(query.from_user.id, {
+                        "name":data["name"],
+                        "description":data["desc"],
+                        "country":data["country"],
+                        "city":0,
+                        "region":data["region"],
+                        "service":data["service"]
+                })
+                await state.finish()
+                await query.message.answer("Success! Use /menu for another operation.")
+
+    elif "city" in query.data:
+        await query.message.delete()
+        async with state.proxy() as data:
+            city_id = query.data.split("=")[1]
+            data["city"] = city_id
+            buttons = []
+            response = await CallApi().new_notif(query.from_user.id, {
+            "name":data["name"],
+            "description":data["desc"],
+            "country":data["country"],
+            "city":city_id,
+            "region":data["region"],
+            "service":data["service"]
+            })
+            await state.finish()
+            await query.message.answer("Success! Use /menu for another operation.")
+
+
     elif "role" in query.data:
         
         role = query.data.split("=")[1]
@@ -85,6 +238,7 @@ async def callback_event(query: types.CallbackQuery, state: FSMContext):
                 "role_request": role
             }
             response = await CallApi().auth(userdata)
+            token = response.headers.get("Authorization")
             response = response.json()
             if "error" in response:
                 if "user with role" in response["error"]:
@@ -95,9 +249,57 @@ async def callback_event(query: types.CallbackQuery, state: FSMContext):
                     await query.message.delete()
                     await state.finish()
                     return await query.message.answer("A user with inserted email isn’t found. Please, check the email, the password, and the role you inserted and try again.")
-            await query.message.answer("Your login success!\nAnother logic comming soon!")
+            if not await User.exist({"email": response["message"]["profile"]["email"]}):
+                await User.new({
+                "user_id": query.from_user.id,
+                "token": token,
+                "email": response["message"]["profile"]["email"],
+                "role": role,
+                "profile": response["message"]["profile"]
+            })
+            else:
+                await User.update({"email": response["message"]["profile"]["email"]}, {
+                "user_id": query.from_user.id,
+                "token": token,
+                "email": response["message"]["profile"]["email"],
+                "role": role,
+                "profile": response["message"]["profile"]
+            })
+            await query.message.answer("Your login success!\nUse /menu for continue!")
+
         await state.finish()
         await query.message.delete()
+
+
+@dp.message_handler(commands=["test"])
+async def test_event(message: types.Message):
+    response = await CallApi().get_country()
+    response = response.json()
+    for i in response["message"]["countrys"]:
+        print(i)
+
+
+@dp.message_handler(state=[CreateNotification.name], content_types=["text"])
+async def parse_name_event(message: types.Message, state: FSMContext):
+    async with state.proxy() as data:
+        data["name"] = message.text
+        await message.answer("Description:")
+        await CreateNotification().next()
+    
+
+@dp.message_handler(state=[CreateNotification.description], content_types=["text"])
+async def parse_desc_event(message: types.Message, state: FSMContext):
+    async with state.proxy() as data:
+        data["desc"] = message.text
+        buttons = []
+        response = await CallApi().get_services()
+        response = response.json()
+        for i in response["message"]["services"]:
+            buttons.append(types.InlineKeyboardButton(text=f"{i['nameEN']}", callback_data=f"service={i['id']}"))
+        keyboard = types.InlineKeyboardMarkup(row_width=1)
+        keyboard.add(*buttons)
+        await message.answer("Select type of service:", reply_markup=keyboard)
+        await CreateNotification().next()
 
 
 @dp.message_handler(state=[AuthStates.email], content_types=["text"])

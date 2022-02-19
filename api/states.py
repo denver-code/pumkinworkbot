@@ -7,3 +7,11 @@ class AuthStates(StatesGroup):
 
 class RegisterStates(StatesGroup):
     role = State()
+
+class CreateNotification(StatesGroup):
+    name = State()
+    description = State()
+    service = State()
+    country = State()
+    state = State()
+    city = State()
