@@ -39,7 +39,7 @@ def need_auth(func):
     @wraps(func)
     async def wrapper(*args, **kwargs):
         response = await CallApi().check_auth(args[0].chat.id)
-        if await CallApi().check_auth(args[0].chat.id):
+        if response:
             return await func(*args, **kwargs)
         return await args[0].answer("You not authed, please use /start command for authorize.")
     return wrapper
@@ -65,14 +65,14 @@ async def menu_event(message: types.Message):
         types.InlineKeyboardButton(text="Service responses", callback_data=f"service_responses"),
         types.InlineKeyboardButton(text="Publish service", callback_data=f"add_notification"),
         types.InlineKeyboardButton(text="My Profile on Site", url=f"https://pumpkin.work/EditProfile"),
-        types.InlineKeyboardButton(text="Exit", callback_data=f"myprofile"),
+        types.InlineKeyboardButton(text="Exit", callback_data=f"exit"),
     ]
     buttons_provider = [
         types.InlineKeyboardButton(text="My Profile", callback_data=f"myprofile"),
-        types.InlineKeyboardButton(text="Orders taken", callback_data=f"myprofile"),
-        types.InlineKeyboardButton(text="Orders channel", callback_data=f"myprofile"),
+        types.InlineKeyboardButton(text="Orders taken", callback_data=f"provider_chats"),
+        types.InlineKeyboardButton(text="Orders channel", url=f"https://t.me/+TfvWDm9hIC5kZTAy"),
         types.InlineKeyboardButton(text="My Profile on Site", url=f"https://pumpkin.work/ViewProvideProfile/-1"),
-        types.InlineKeyboardButton(text="Exit", callback_data=f"myprofile"),
+        types.InlineKeyboardButton(text="Exit", callback_data=f"exit"),
     ]
     keyboard = types.InlineKeyboardMarkup(row_width=1)
     if role == "provider":
@@ -95,6 +95,22 @@ async def callback_event(query: types.CallbackQuery, state: FSMContext):
         await query.message.delete()
         await CreateNotification.name.set()
         await query.message.answer("Request Title:")
+
+    elif query.data == "provider_chats":
+        await query.message.delete()
+        message_text = "All taken:\n"
+        response = await CallApi().get_chats(query.from_user.id)
+        response = response.json()
+        if len(response["message"]["chats"]) != 0:
+            for i in response["message"]["chats"]:
+                if i["agreementProvide"] == 1 and i["agreementRequest"] == 1:
+                    message_text += f"""<a href="https://pumpkin.work/chat/{i["id"]}">Notification: {i["notification"]["name"]}\nRequest: {i["request"]["name"]} {i["request"]["surname"]}\nProvide: {i["provide"]["name"]}\n(provide) (request):\nAgreement: {i["agreementProvide"]} {i["agreementRequest"]}\nComplete: {i["completeProvide"]} {i["completeRequest"]}</a>\n\n"""
+        buttons = [
+            types.InlineKeyboardButton(text="Back", callback_data=f"menu")
+        ]
+        keyboard = types.InlineKeyboardMarkup(row_width=1)
+        keyboard.add(*buttons)
+        await query.message.answer(message_text, parse_mode="Html", reply_markup=keyboard)
 
     elif query.data == "service_responses":
         await query.message.delete()
@@ -128,6 +144,13 @@ async def callback_event(query: types.CallbackQuery, state: FSMContext):
         keyboard.add(*buttons)
 
         await query.message.answer(message_text, reply_markup=keyboard)
+
+
+    elif query.data == "exit":
+        await query.message.delete()
+        await User.delete({"user_id":query.from_user.id})
+        await query.message.answer("Success!\nUse /start for auth again.")
+
 
     elif "register" in query.data:
         role = query.data.split("=")[-1]
@@ -240,6 +263,7 @@ async def callback_event(query: types.CallbackQuery, state: FSMContext):
             response = await CallApi().auth(userdata)
             token = response.headers.get("Authorization")
             response = response.json()
+            print(response)
             if "error" in response:
                 if "user with role" in response["error"]:
                     await query.message.delete()
